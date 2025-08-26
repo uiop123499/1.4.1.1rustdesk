@@ -7,7 +7,6 @@ import 'package:flutter_hbb/common.dart';
 import 'package:flutter_hbb/common/shared_state.dart';
 import 'package:flutter_hbb/common/widgets/dialog.dart';
 import 'package:flutter_hbb/consts.dart';
-import 'package:flutter_hbb/desktop/widgets/remote_toolbar.dart';
 import 'package:flutter_hbb/models/model.dart';
 import 'package:flutter_hbb/models/platform_model.dart';
 import 'package:get/get.dart';
@@ -19,11 +18,12 @@ class TTextMenu {
   final VoidCallback? onPressed;
   Widget? trailingIcon;
   bool divider;
-  TTextMenu(
-      {required this.child,
-      required this.onPressed,
-      this.trailingIcon,
-      this.divider = false});
+  TTextMenu({
+    required this.child,
+    required this.onPressed,
+    this.trailingIcon,
+    this.divider = false,
+  });
 
   Widget getChild() {
     if (trailingIcon != null) {
@@ -38,6 +38,46 @@ class TTextMenu {
       return child;
     }
   }
+}
+
+/// 构建工具栏按钮列表，适用于远程控制界面
+List<TTextMenu> buildToolbarMenus({
+  VoidCallback? onBackPressed,
+  VoidCallback? onHomePressed,
+  VoidCallback? onVolumePressed,
+}) {
+  return [
+    TTextMenu(
+      child: const Text("返回"),
+      onPressed: onBackPressed,
+      trailingIcon: const Icon(Icons.arrow_back, color: Colors.white),
+    ),
+    TTextMenu(
+      child: const Text("Home"),
+      onPressed: onHomePressed,
+      trailingIcon: const Icon(Icons.home, color: Colors.white),
+    ),
+    TTextMenu(
+      child: const Text("音量"),
+      onPressed: onVolumePressed,
+      trailingIcon: const Icon(Icons.volume_up, color: Colors.white),
+    ),
+
+    // —— 新增隐私模式按钮 —— 🔒
+    TTextMenu(
+      child: const Text("隐私模式"),
+      onPressed: () async {
+        const platform = MethodChannel('mChannel');
+        try {
+          await platform.invokeMethod('toggle_privacy_mode');
+        } on PlatformException catch (e) {
+          debugPrint("隐私模式切换失败: ${e.message}");
+        }
+      },
+      trailingIcon: const Icon(Icons.privacy_tip, color: Colors.white),
+      divider: true,
+    ),
+  ];
 }
 
 class TRadioMenu<T> {
